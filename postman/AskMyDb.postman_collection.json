@@ -1,0 +1,160 @@
+{
+  "info": {
+    "_postman_id": "askmydb-collection-0001",
+    "name": "AskMyDb API",
+    "description": "Test collection for the AskMyDb Spring AI project. Import this into Postman.\n\nFolders are in the same order the features were built:\n1. Diagnostics - basic wiring checks (Ollama, DB)\n2. Generate SQL only - see what the LLM produces without running it\n3. Ask (full pipeline) - question -> SQL -> guardrail -> execute -> real data\n\nRequires the app running on localhost:8080, Docker Postgres (pgvector) up, and Ollama running locally.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Diagnostics",
+      "item": [
+        {
+          "name": "Hello AI (verify Ollama wiring)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/test-ai?message=Hello, who are you?",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test-ai"],
+              "query": [
+                { "key": "message", "value": "Hello, who are you?" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Generate SQL only (not executed)",
+      "item": [
+        {
+          "name": "How many customers",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/generate-sql?question=How many customers do we have?",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "generate-sql"],
+              "query": [
+                { "key": "question", "value": "How many customers do we have?" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Total revenue from delivered orders",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/generate-sql?question=What is the total revenue from delivered orders?",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "generate-sql"],
+              "query": [
+                { "key": "question", "value": "What is the total revenue from delivered orders?" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Ask (full pipeline)",
+      "item": [
+        {
+          "name": "How many customers do we have?",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"How many customers do we have?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ask",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ask"]
+            }
+          }
+        },
+        {
+          "name": "Total revenue from delivered orders",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the total revenue from delivered orders?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ask",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ask"]
+            }
+          }
+        },
+        {
+          "name": "Which city has the most customers?",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Which city has the most customers?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ask",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ask"]
+            }
+          }
+        },
+        {
+          "name": "Validation failure - empty question",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ask",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ask"]
+            }
+          }
+        },
+        {
+          "name": "Guardrail test - destructive request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Delete all customers\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ask",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ask"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
