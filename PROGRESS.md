@@ -197,14 +197,87 @@ revenue" through the real console and got a correctly-derived SQL (`JOIN` +
 
 ---
 
+## Day 3 — 2026-08-26
+
+### Git housekeeping
+
+Committed the frontend rebuild and the two prompt fixes from Day 2
+(commit `47d1731`), after clearing a stale `.git/index.lock` left over from
+an interrupted process. `git log` confirms the earlier Credential Manager
+fix actually worked — the branch was already in sync with `origin/main`
+before this commit, just missing the local push for the newest work.
+
+### RAG layer: retrieval instead of a full schema dump
+
+Replaced "stuff the entire schema into every prompt" with a real
+retrieval-augmented pipeline, using the `pgvector`/`nomic-embed-text`
+infrastructure that had been sitting configured-but-unused since Day 1.
+
+- **Config** — added `spring.ai.vectorstore.pgvector.*` to
+  `application.yaml`: `initialize-schema: true` (Spring Boot creates the
+  `vector` extension and the table automatically), `dimensions: 768`
+  (must match `nomic-embed-text`'s actual output size, or inserts fail),
+  and a custom `table-name: schema_embeddings`.
+- **`SchemaService`** — added `getTableDescriptions()`, returning one
+  description per table instead of one giant string, so each table can
+  become its own embeddable chunk. Also excludes the `schema_embeddings`
+  table itself from every listing, so the RAG layer never tries to
+  describe (or embed) its own storage table.
+- **`SchemaIndexer`** (new, `CommandLineRunner`) — runs once at startup,
+  embeds each table's description via the vector store, and stores it.
+  Idempotent: checks whether the store already has content before
+  re-indexing, so restarts don't create duplicates. Table names are
+  converted to deterministic UUIDs (`UUID.nameUUIDFromBytes`) before being
+  used as document IDs, since `PgVectorStore`'s `id` column requires valid
+  UUIDs — this was the first bug hit (`Invalid UUID string: customers`),
+  fixed by hashing the name into a stable UUID rather than using it raw.
+- **`NlToSqlService`** — `getSchemaDescription()` (the full dump) was
+  replaced with a `retrieveRelevantSchema(question)` step: embed the
+  question, similarity-search the vector store for the top-K (configurable
+  via `askmydb.rag.top-k`, default 3) most relevant tables, and build the
+  prompt's schema section from only those.
+
+### The bug retrieval alone can't avoid — and the fix
+
+Top-K-by-similarity has a real gap: it finds tables whose *wording*
+resembles the question, but has no concept of which tables are actually
+JOINable. Caught this directly: "Which product category made the most
+revenue from customers in Bengaluru?" needs all four tables, but with
+`top-k: 3`, `order_items` didn't make the cut. The model didn't refuse —
+it forced a join between the three tables it *did* see
+(`JOIN products p ON o.id = p.id`, matching two unrelated ID columns that
+happen to both be small integers). This ran without error and returned a
+confident, wrong answer ("Stationery") — the dangerous class of failure,
+since nothing about the response looks off.
+
+Fixed with a "schema linking" expansion step, `SchemaService.
+getRelatedTables(tableName)`: after the similarity search returns its
+top-K seed tables, look up every table each one is directly foreign-key
+connected to (via JDBC `getImportedKeys`/`getExportedKeys`, both
+directions) and add those too, even if they scored low on their own. For
+the same question, `order_items` now gets pulled in because it's an FK
+neighbor of `orders`, and the generated SQL changed to correctly join
+`products → order_items → orders → customers` with a proper
+`SUM(oi.quantity * oi.unit_price)` — and the answer changed to
+"Furniture", confirming the first answer wasn't just ugly SQL, it was
+factually wrong.
+
+This is worth remembering as a general lesson: semantic similarity finds
+*relevant* tables, but relevance and *join-reachability* are different
+things, and only the second one determines whether a query can even be
+constructed correctly.
+
+---
+
 ## Next up
 
-- pgvector-based RAG layer: embed schema descriptions with `nomic-embed-text`
-  and retrieve only relevant tables for large schemas, instead of stuffing
-  the whole schema into every prompt.
 - Real authentication (JWT) to replace the temporary open `SecurityConfig`.
-- Confirm the final `git push` to GitHub succeeded (Credential Manager
-  account mismatch was being fixed).
+- Push the latest commits to GitHub (local commits are ready, ahead of
+  `origin/main`).
+- Multi-hop schema linking: the current FK expansion is one level deep,
+  which is enough for this schema's simple chain but wouldn't guarantee
+  correctness on a schema where the needed table is two FK-hops away from
+  every seed match.
 - Optional stretch goals discussed: self-correcting SQL (feed a Postgres
   error back to the LLM to retry), an MCP server mode so external AI clients
   (e.g. Claude Desktop) can query the database directly, and a pluggable

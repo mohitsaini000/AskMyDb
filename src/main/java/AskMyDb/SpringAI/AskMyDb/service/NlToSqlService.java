@@ -1,11 +1,23 @@
 package AskMyDb.SpringAI.AskMyDb.service;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 // Turns a plain-English question into a SQL query using the LLM,
-// grounded in the real schema (via SchemaService) so it doesn't hallucinate
-// table/column names that don't exist.
+// grounded in a *retrieved* slice of the schema (via the vector store) so it
+// doesn't hallucinate table/column names that don't exist - and so the
+// prompt stays small even as the real schema grows to hundreds of tables.
 //
 // IMPORTANT: this service ONLY generates SQL text. It does NOT execute it.
 // Execution + safety checks come in a later step (guardrails first, always).
@@ -13,11 +25,16 @@ import org.springframework.stereotype.Service;
 public class NlToSqlService {
 
     private final ChatClient chatClient;
+    private final VectorStore vectorStore;
     private final SchemaService schemaService;
+    private final int topK;
 
-    public NlToSqlService(ChatClient chatClient, SchemaService schemaService) {
+    public NlToSqlService(ChatClient chatClient, VectorStore vectorStore, SchemaService schemaService,
+                           @Value("${askmydb.rag.top-k:3}") int topK) {
         this.chatClient = chatClient;
+        this.vectorStore = vectorStore;
         this.schemaService = schemaService;
+        this.topK = topK;
     }
 
     private static final String SYSTEM_TEMPLATE = """
@@ -58,12 +75,17 @@ public class NlToSqlService {
             Question: What's today's weather in Bengaluru?
             SQL: CANNOT_ANSWER
 
+            The tables below were retrieved as the ones most relevant to this specific
+            question - they may not be every table in the database. If answering
+            properly would require a table that genuinely isn't listed here, that is
+            still the CANNOT_ANSWER case above; do not guess at a table that isn't shown.
+
             Database schema:
             %s
             """;
 
     public String generateSql(String question) {
-        String schemaDescription = schemaService.getSchemaDescription();
+        String schemaDescription = retrieveRelevantSchema(question);
         String systemPrompt = String.format(SYSTEM_TEMPLATE, schemaDescription);
 
         String rawResponse = chatClient.prompt()
@@ -73,6 +95,41 @@ public class NlToSqlService {
                 .content();
 
         return cleanSql(rawResponse);
+    }
+
+    // RAG retrieval step: similaritySearch embeds the question under the hood
+    // and compares it against the table embeddings SchemaIndexer stored
+    // earlier, returning only the topK closest matches - not the whole
+    // schema. This is the "retrieval" half of the pipeline.
+    //
+    // On its own, this has a real gap: it only finds tables whose *wording*
+    // resembles the question. It has no idea a question that mentions
+    // "customers" and "revenue" also needs the "orders" table to JOIN them
+    // together, if "orders" itself didn't score high enough to make the
+    // topK cut. So this is followed by a "schema linking" expansion step:
+    // for every table retrieval found, pull in every table it's directly
+    // foreign-key-connected to as well, even if that neighbor scored low
+    // on its own. That's what makes JOINs reliably possible instead of
+    // depending on semantic similarity to also predict join structure.
+    private String retrieveRelevantSchema(String question) {
+        List<Document> seedMatches = vectorStore.similaritySearch(
+                SearchRequest.builder().query(question).topK(topK).build());
+
+        Set<String> relevantTables = new LinkedHashSet<>();
+        for (Document match : seedMatches) {
+            String tableName = (String) match.getMetadata().get("table");
+            if (tableName == null) {
+                continue;
+            }
+            relevantTables.add(tableName);
+            relevantTables.addAll(schemaService.getRelatedTables(tableName));
+        }
+
+        Map<String, String> allDescriptions = schemaService.getTableDescriptions();
+        return relevantTables.stream()
+                .map(allDescriptions::get)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
     }
 
     // Small but important: models sometimes ignore the "no markdown" instruction

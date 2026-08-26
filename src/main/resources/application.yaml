@@ -22,3 +22,19 @@ spring:
           temperature: 0.1
       embedding:
         model: nomic-embed-text
+
+    vectorstore:
+      pgvector:
+        initialize-schema: true
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 768
+        schema-name: public
+        table-name: schema_embeddings
+
+askmydb:
+  rag:
+    # How many of the most-relevant tables to retrieve per question.
+    # Deliberately less than the total table count (4) so retrieval is
+    # actually filtering something, not just returning everything.
+    top-k: 3
