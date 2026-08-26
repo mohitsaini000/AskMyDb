@@ -66,6 +66,12 @@ public class SchemaIndexer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        // Needed by SchemaService.getSampleValues()' fuzzy-matching path
+        // (similarity() function) for value linking on large columns - a
+        // one-time, idempotent setup step, same idea as the state table
+        // below.
+        jdbcTemplate.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+
         jdbcTemplate.execute(ENSURE_STATE_TABLE_SQL);
 
         String currentFingerprint = schemaService.computeSchemaFingerprint();

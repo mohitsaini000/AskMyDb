@@ -180,7 +180,7 @@ public class NlToSqlService {
             // actually being shown to the LLM this question, never for
             // every table in the database - this is a live query against
             // real data, not something we want to run unnecessarily.
-            Map<String, List<String>> sampleValues = schemaService.getSampleValues(table);
+            Map<String, List<String>> sampleValues = schemaService.getSampleValues(table, question);
             for (Map.Entry<String, List<String>> entry : sampleValues.entrySet()) {
                 if (entry.getValue().isEmpty()) {
                     continue;

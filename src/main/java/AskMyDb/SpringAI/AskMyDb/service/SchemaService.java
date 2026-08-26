@@ -170,12 +170,23 @@ public class SchemaService {
     }
 
     // How many distinct values a column can have before we treat it as
-    // "free text" (customer names, addresses, etc.) rather than a genuine
-    // categorical/lookup column (city, status, category) worth showing real
-    // examples of. Enforced via LIMIT in the query itself - if the result
-    // hits exactly this cap, we don't actually know the true count, so we
-    // treat it as too high rather than risk dumping hundreds of values.
+    // high-cardinality (800 cities, free-text names, etc.) rather than a
+    // small, fully-enumerable categorical column (a handful of statuses or
+    // cities). Enforced via LIMIT in the query itself - if the result hits
+    // exactly this cap, we don't actually know the true count, so we treat
+    // it as "too high" rather than risk dumping hundreds of values.
     private static final int SAMPLE_VALUE_LIMIT = 20;
+
+    // Minimum pg_trgm similarity score (0.0-1.0) for a real stored value to
+    // even be considered a match for something in the question. Kept
+    // deliberately low - we'd rather show a slightly-too-generous handful
+    // of candidates than silently show nothing.
+    private static final double SIMILARITY_THRESHOLD = 0.2;
+
+    // How many fuzzy matches to show per high-cardinality column. Small on
+    // purpose - this is meant to be a short, targeted hint list, not a
+    // second copy of the whole column.
+    private static final int FUZZY_MATCH_LIMIT = 5;
 
     // Live, per-question lookup - deliberately NOT cached, NOT part of
     // getTableDescriptions(), and NOT part of the schema fingerprint. Actual
@@ -185,12 +196,27 @@ public class SchemaService {
     // schema would mean it goes stale almost immediately.
     //
     // This exists to solve "value linking": a user might refer to a real
-    // stored value by a different name than what's actually in the
-    // database (e.g. asking for "Bangalore" when the column actually
-    // stores "Bengaluru"). No amount of schema/column description fixes
-    // that - the LLM needs to see the *actual* values that exist so it can
-    // recognize the match itself using knowledge it already has.
-    public Map<String, List<String>> getSampleValues(String tableName) {
+    // stored value using slightly different wording than what's actually in
+    // the database. No amount of schema/column description fixes that - the
+    // LLM (or, for large columns, Postgres itself via fuzzy matching) needs
+    // to see the *actual* values that exist.
+    //
+    // Two different strategies depending on scale:
+    //   - Small column (<= SAMPLE_VALUE_LIMIT distinct values, e.g. a
+    //     handful of cities or statuses): show every value that exists -
+    //     cheap, and gives the LLM the complete picture.
+    //   - Large column (hundreds/thousands of distinct values, e.g. 800
+    //     cities): showing everything doesn't scale and bloats the prompt,
+    //     so instead we fuzzy-match the question itself against the real
+    //     values using Postgres' pg_trgm extension and only show the
+    //     handful of closest matches. Note: this catches genuine
+    //     misspellings (e.g. "Bangalor" missing a letter) well, because
+    //     those share most of their characters with the real value. It
+    //     does NOT reliably catch a true alias/synonym for the same thing
+    //     (e.g. "Bangalore" vs "Bengaluru" are different words entirely,
+    //     not a typo of each other) - that's a separate problem that would
+    //     need a curated synonym mapping, not string similarity.
+    public Map<String, List<String>> getSampleValues(String tableName, String question) {
         Map<String, List<String>> samples = new LinkedHashMap<>();
 
         try (Connection connection = dataSource.getConnection()) {
@@ -208,15 +234,21 @@ public class SchemaService {
                         continue;
                     }
 
-                    List<String> values = fetchDistinctValues(connection, tableName, columnName);
-                    if (values.size() <= SAMPLE_VALUE_LIMIT) {
-                        // At or under the cap means we saw every distinct
-                        // value that exists - a genuinely small, categorical
-                        // column worth showing in full.
+                    List<String> preview = fetchDistinctValues(connection, tableName, columnName, SAMPLE_VALUE_LIMIT + 1);
+
+                    List<String> values;
+                    if (preview.size() <= SAMPLE_VALUE_LIMIT) {
+                        // Small enough to have seen every distinct value
+                        // already - just use what we fetched.
+                        values = preview;
+                    } else {
+                        // Too many to dump wholesale - search instead.
+                        values = fetchFuzzyMatches(connection, tableName, columnName, question);
+                    }
+
+                    if (!values.isEmpty()) {
                         samples.put(columnName, values);
                     }
-                    // Hit the cap -> likely free text (names, addresses)
-                    // with too many unique values to usefully show; skip it.
                 }
             }
         } catch (SQLException e) {
@@ -231,12 +263,12 @@ public class SchemaService {
         return upper.contains("CHAR") || upper.contains("TEXT");
     }
 
-    private List<String> fetchDistinctValues(Connection connection, String tableName, String columnName) throws SQLException {
+    private List<String> fetchDistinctValues(Connection connection, String tableName, String columnName, int limit) throws SQLException {
         // tableName/columnName come from JDBC metadata (the database's own
         // catalog), never from user input, so string-building this SQL is
         // safe here in a way it would NOT be for anything derived from a
         // question or request body.
-        String sql = "SELECT DISTINCT " + columnName + " FROM " + tableName + " LIMIT " + (SAMPLE_VALUE_LIMIT + 1);
+        String sql = "SELECT DISTINCT " + columnName + " FROM " + tableName + " LIMIT " + limit;
         List<String> values = new ArrayList<>();
 
         try (PreparedStatement statement = connection.prepareStatement(sql);
@@ -245,6 +277,38 @@ public class SchemaService {
                 String value = resultSet.getString(1);
                 if (value != null) {
                     values.add(value);
+                }
+            }
+        }
+
+        return values;
+    }
+
+    // Uses Postgres' pg_trgm extension (character-trigram overlap) to find
+    // the real stored values that are textually closest to the question -
+    // e.g. a slightly misspelled city name. The question itself is a bound
+    // parameter here (unlike tableName/columnName above), because it IS
+    // user input - never string-concatenated into SQL.
+    private List<String> fetchFuzzyMatches(Connection connection, String tableName, String columnName, String question) throws SQLException {
+        String sql = "SELECT " + columnName
+                + " FROM (SELECT DISTINCT " + columnName + " FROM " + tableName + ") AS distinct_values"
+                + " WHERE similarity(" + columnName + ", ?) > ?"
+                + " ORDER BY similarity(" + columnName + ", ?) DESC"
+                + " LIMIT ?";
+
+        List<String> values = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, question);
+            statement.setDouble(2, SIMILARITY_THRESHOLD);
+            statement.setString(3, question);
+            statement.setInt(4, FUZZY_MATCH_LIMIT);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    String value = resultSet.getString(1);
+                    if (value != null) {
+                        values.add(value);
+                    }
                 }
             }
         }
