@@ -124,15 +124,87 @@ natural-language questions end to end.
 
 ---
 
+## Day 2 — 2026-08-26
+
+### Task 7: edge-case testing surfaced two more hallucination classes
+
+Ran a batch of edge-case questions against the full `/api/ask` pipeline, on
+top of the earlier `total_amount` hallucination fix:
+
+- **Tie-handling bug.** "Which cities has the most customers if more than 1
+  city exist then give me all those cities those are equal no of count?"
+  The model's first answer used `ORDER BY COUNT(*) DESC LIMIT 1`, which
+  silently drops a real tie (Bengaluru and Mumbai were actually tied in the
+  seed data — `LIMIT 1` just hid Mumbai). Fixed with a second few-shot
+  example showing the correct pattern for tie-sensitive questions:
+  `HAVING COUNT(*) = (SELECT MAX(...) FROM (...))` instead of `LIMIT 1`.
+  Re-tested — both tied cities now come back.
+
+- **Off-topic hallucination.** "What's today's weather in Bengaluru?" should
+  have produced `CANNOT_ANSWER`, but the model invented a nonexistent
+  `cities` table instead, so it only failed at Postgres execution time
+  (`422`, "relation \"cities\" does not exist"). Not unsafe — the
+  guardrail-then-database layer caught it exactly as designed, nothing ran
+  against real data — but not the cleanest message either. Fixed two ways:
+  strengthened the "never invent names" rule to explicitly warn against
+  inventing a table/column just because a word in the question resembles
+  one, and added a third few-shot example (the weather question →
+  `CANNOT_ANSWER`). Re-tested — now returns a clean `400` with "This
+  question can't be answered with the current database schema."
+
+- Also verified the ambiguous case "Who are my best customers?" was already
+  handled well: the model interpreted "best" as total spend and derived it
+  correctly via `JOIN` + `SUM`, with no invented columns.
+
+This makes three times now that a concrete few-shot example fixed a class of
+hallucination that a plain written rule alone didn't fully fix — worth
+remembering as a general lesson for a small local model: showing the correct
+SQL *shape* works better than just describing the rule in prose.
+
+### Frontend: a proper demo UI
+
+Built in two passes:
+
+1. **First pass** — `src/main/resources/static/index.html`, a plain
+   functional page: question input, generated SQL, a results table, and
+   error states. Spring Boot serves anything under `static/` automatically,
+   and because the page and `/api/ask` are same-origin, there's no CORS to
+   configure — one of the reasons a separate frontend project (React on its
+   own dev server) was deliberately not used.
+2. **Second pass**, rebuilt as a 4-section animated single page (hero, live
+   console, "how it works", footer):
+   - **Hero** — an ambient Canvas animation (a slowly drifting node/edge
+     network, echoing "related tables") behind a looping simulated demo
+     (typed question → generated SQL → result), built from the real sample
+     data, so a visitor understands the product before touching anything.
+   - **Console** — the real, functional `/api/ask` UI: a 3-stage visual
+     indicator ("Drafting SQL" / "Checking safety" / "Querying Postgres")
+     during the wait, a copy-to-clipboard button on the generated SQL, and
+     staggered row animations on the results table.
+   - **How it works** — a scroll-revealed 4-step timeline mirroring the
+     actual pipeline, with the one AI-touching step called out in amber —
+     the same color coding used in the request-flow diagram, so the two
+     artifacts read as one system.
+   - **Footer** — tech stack badges and the repo link.
+   - Still deliberately vanilla HTML/CSS/JS, no build step or framework —
+     same reasoning as pass 1: this project's differentiator is the
+     backend, so the frontend only needs to demo it well, not show off a
+     separate skill set.
+
+Confirmed end to end in the browser: asked "which customer give us highest
+revenue" through the real console and got a correctly-derived SQL (`JOIN` +
+`SUM`, no invented columns) with the right top result (Priya Verma).
+
+---
+
 ## Next up
 
-- Confirm the `POST /api/ask` flow end to end via Postman after the latest
-  controller changes.
-- More edge-case testing / prompt iteration (Task 7).
 - pgvector-based RAG layer: embed schema descriptions with `nomic-embed-text`
   and retrieve only relevant tables for large schemas, instead of stuffing
   the whole schema into every prompt.
 - Real authentication (JWT) to replace the temporary open `SecurityConfig`.
+- Confirm the final `git push` to GitHub succeeded (Credential Manager
+  account mismatch was being fixed).
 - Optional stretch goals discussed: self-correcting SQL (feed a Postgres
   error back to the LLM to retry), an MCP server mode so external AI clients
   (e.g. Claude Desktop) can query the database directly, and a pluggable
