@@ -85,7 +85,42 @@ public class SchemaService {
             }
         }
 
+        appendForeignKeys(metaData, tableName, sb);
+
         return sb.toString();
+    }
+
+    // Spells out exactly which column joins to which table/column, in plain
+    // text, right in the schema description the LLM sees - e.g.
+    //   "  - order_id references orders(id)"
+    // Without this, the model only sees "order_id (integer)" and has to
+    // *guess* which table that's a foreign key into, purely from the column
+    // name. That guess is exactly how a wrong join like
+    // "JOIN customers ON order_items.order_id = customers.id" happens -
+    // Postgres has no way to catch it (it's valid SQL, it just silently
+    // returns zero/wrong rows), so the mistake has to be prevented up front
+    // instead of caught after the fact.
+    private void appendForeignKeys(DatabaseMetaData metaData, String tableName, StringBuilder sb) throws SQLException {
+        try (ResultSet keys = metaData.getImportedKeys(null, "public", tableName)) {
+            boolean headerWritten = false;
+            while (keys.next()) {
+                String fkColumn = keys.getString("FKCOLUMN_NAME");
+                String referencedTable = keys.getString("PKTABLE_NAME");
+                String referencedColumn = keys.getString("PKCOLUMN_NAME");
+
+                if (INTERNAL_TABLES.contains(referencedTable)) {
+                    continue;
+                }
+
+                if (!headerWritten) {
+                    sb.append("  Foreign keys:\n");
+                    headerWritten = true;
+                }
+                sb.append("    - ").append(fkColumn)
+                        .append(" references ").append(referencedTable)
+                        .append("(").append(referencedColumn).append(")\n");
+            }
+        }
     }
 
     // "Schema linking" step for the RAG layer: similarity search alone only

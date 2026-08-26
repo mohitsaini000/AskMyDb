@@ -1,5 +1,7 @@
 package AskMyDb.SpringAI.AskMyDb.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -23,6 +25,8 @@ import java.util.stream.Collectors;
 // Execution + safety checks come in a later step (guardrails first, always).
 @Service
 public class NlToSqlService {
+
+    private static final Logger log = LoggerFactory.getLogger(NlToSqlService.class);
 
     private final ChatClient chatClient;
     private final VectorStore vectorStore;
@@ -62,6 +66,12 @@ public class NlToSqlService {
               Instead select every row whose aggregate equals the maximum (or minimum),
               using HAVING with a subquery that computes MAX()/MIN() over the grouped
               aggregate, as shown in the second example below.
+            - Only join two tables directly if one of them lists the other in its
+              "Foreign keys" section below. If what the question needs spans two tables
+              that are NOT directly connected by a listed foreign key, you must join
+              through every intermediate table that connects them, one hop at a time -
+              never invent a direct join between two tables just because they both
+              happen to have a similarly-named id column. See the fourth example below.
 
             Example of correctly deriving a value that has no direct column:
             Question: What is the total value of all shipped orders?
@@ -75,6 +85,12 @@ public class NlToSqlService {
             Question: What's today's weather in Bengaluru?
             SQL: CANNOT_ANSWER
 
+            Example of correctly joining through an intermediate table instead of
+            skipping it (customers and products are not directly connected by any
+            foreign key - orders and order_items are the bridge tables in between):
+            Question: List customers in a given city along with the products they've bought.
+            SQL: SELECT c.name, p.name, p.category FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id WHERE c.city = 'Chennai';
+
             The tables below were retrieved as the ones most relevant to this specific
             question - they may not be every table in the database. If answering
             properly would require a table that genuinely isn't listed here, that is
@@ -85,7 +101,10 @@ public class NlToSqlService {
             """;
 
     public String generateSql(String question) {
+        long start = System.currentTimeMillis();
         String schemaDescription = retrieveRelevantSchema(question);
+        long afterRetrieval = System.currentTimeMillis();
+
         String systemPrompt = String.format(SYSTEM_TEMPLATE, schemaDescription);
 
         String rawResponse = chatClient.prompt()
@@ -93,6 +112,13 @@ public class NlToSqlService {
                 .user(question)
                 .call()
                 .content();
+        long afterLlmCall = System.currentTimeMillis();
+
+        // TEMPORARY diagnostic logging - splitting retrieval (vector search +
+        // JDBC metadata reads) from the actual LLM generation call, so we can
+        // see which one is actually slow instead of guessing.
+        log.info("TIMING - schema retrieval: {} ms | LLM call: {} ms",
+                afterRetrieval - start, afterLlmCall - afterRetrieval);
 
         return cleanSql(rawResponse);
     }
@@ -115,6 +141,13 @@ public class NlToSqlService {
         List<Document> seedMatches = vectorStore.similaritySearch(
                 SearchRequest.builder().query(question).topK(topK).build());
 
+        // TEMPORARY diagnostic logging - which tables did the similarity
+        // search itself pick as seeds, before FK expansion touches anything.
+        List<String> seedTableNames = seedMatches.stream()
+                .map(m -> (String) m.getMetadata().get("table"))
+                .toList();
+        log.info("DEBUG - seed tables from vector similarity search: {}", seedTableNames);
+
         Set<String> relevantTables = new LinkedHashSet<>();
         for (Document match : seedMatches) {
             String tableName = (String) match.getMetadata().get("table");
@@ -125,11 +158,53 @@ public class NlToSqlService {
             relevantTables.addAll(schemaService.getRelatedTables(tableName));
         }
 
+        // TEMPORARY diagnostic logging - the final table set after FK
+        // expansion, i.e. exactly what schema text gets shown to the LLM.
+        log.info("DEBUG - final tables after FK expansion (sent to LLM): {}", relevantTables);
+
         Map<String, String> allDescriptions = schemaService.getTableDescriptions();
         return relevantTables.stream()
                 .map(allDescriptions::get)
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining("\n"));
+    }
+
+    // Self-correction step: called only when a previously-generated query was
+    // already validated as safe (a real SELECT, no forbidden keywords) but
+    // then failed when Postgres actually ran it - e.g. "column t2.name does
+    // not exist". That's a mistake the LLM made about which table a column
+    // belongs to, not a schema retrieval problem, so we hand it the exact
+    // Postgres error (which is often very specific, even naming the column
+    // it thinks you meant) and ask it to fix its own query.
+    public String regenerateSql(String question, String previousSql, String errorMessage) {
+        long start = System.currentTimeMillis();
+        String schemaDescription = retrieveRelevantSchema(question);
+        String systemPrompt = String.format(SYSTEM_TEMPLATE, schemaDescription);
+
+        String correctionPrompt = String.format("""
+                The original question was: %s
+
+                You previously generated this SQL query:
+                %s
+
+                Running it against the real database failed with this error:
+                %s
+
+                Write a corrected SQL query that fixes this specific error, while
+                still following all the rules above and still answering the
+                original question. Output ONLY the corrected raw SQL query.
+                """, question, previousSql, errorMessage);
+
+        String rawResponse = chatClient.prompt()
+                .system(systemPrompt)
+                .user(correctionPrompt)
+                .call()
+                .content();
+        long elapsed = System.currentTimeMillis() - start;
+
+        log.info("TIMING - SQL self-correction retry: {} ms", elapsed);
+
+        return cleanSql(rawResponse);
     }
 
     // Small but important: models sometimes ignore the "no markdown" instruction

@@ -312,15 +312,78 @@ LLM or embedded as if it were queryable data.
 
 ---
 
+## Day 5 — 2026-08-26
+
+Investigated a real user complaint: "answers are taking too long." Added
+temporary timing logs around each stage (schema retrieval, LLM call,
+guardrail, DB execute) instead of guessing where the time went. The
+numbers were clear: schema retrieval + guardrail + DB execute together
+took ~200-300ms; the LLM call itself took 4.7-10.5 seconds - 85-95% of
+total request time. This is a local Ollama model generating text on a
+CPU-only machine, not a code inefficiency. Documented as a known,
+hardware-bound trade-off (options: smaller model, GPU, or a hosted API -
+each with its own cost/latency/privacy trade-off) rather than something to
+"fix" in application code.
+
+While instrumenting, live-tested a multi-table question ("customers in a
+city + the products they bought") and found a second real bug: the
+generated SQL joined `order_items.order_id` directly to `customers.id`,
+skipping the `orders` table entirely. Valid SQL, wrong join - Postgres
+has no way to flag this, so it silently returned 0 rows instead of an
+error, the same dangerous failure class as the earlier FK-linking bug.
+
+Fixed this in three iterations, keeping only what was actually proven to
+help:
+
+1. **Self-correcting SQL retry** (`AskService`, `NlToSqlService
+   .regenerateSql()`): when `QueryExecutionService.execute()` throws a
+   `DataAccessException`, the exact Postgres error message is fed back to
+   the LLM with the failed SQL and one retry is allowed (re-validated
+   through the same `SqlGuardrail` as any other generated SQL - a retry
+   doesn't skip safety checks). This fixed a *different* bug it surfaced
+   along the way (a stray `t2.name` reference to a non-existent column)
+   but did NOT fix the join bug, because a wrong-but-valid join never
+   throws a database error in the first place - there's nothing for
+   Postgres to report back. Real lesson: self-correction only catches
+   what the database itself can detect; a semantically wrong join is
+   invisible to it.
+2. **Explicit foreign keys in the schema text** (`SchemaService
+   .appendForeignKeys()`): table descriptions now spell out
+   `- order_id references orders(id)` using the same JDBC
+   `getImportedKeys()` data `getRelatedTables()` already reads, instead of
+   just listing column name + type. Necessary, but not sufficient on its
+   own - the model still produced the same wrong join afterward.
+3. **A fourth few-shot example** demonstrating exactly this shape of
+   question - joining through two intermediate "bridge" tables
+   (`orders`, `order_items`) between `customers` and `products` - is what
+   actually fixed it. Re-running the identical question afterward produced
+   the correct 4-table join.
+
+That fix then surfaced a *third*, genuinely different issue: the corrected
+query (`WHERE c.city = 'Bangalore'`) still returned 0 rows, even though
+the join was now correct. Real data uses "Bengaluru", not "Bangalore" -
+the LLM normalized the user's Hinglish "banglore" to the common English
+spelling, which doesn't match the stored value. Re-running with
+"Bengaluru" returned the correct 3 rows. This isn't a join/schema bug at
+all - it's a distinct, well-known NL-to-SQL problem called *value
+linking* (matching a mentioned entity to the literal value actually
+stored in the database, as opposed to *schema linking*, which matches it
+to the right table/column). Left unfixed for now and noted as a known
+gap - a real fix would mean fuzzy-matching literals (`ILIKE`) or
+maintaining a small alias dictionary for common name variants.
+
+---
+
 ## Next up
 
 - Real authentication (JWT) to replace the temporary open `SecurityConfig`.
+- Value linking: handle common city/entity name variants (e.g. "Bangalore"
+  vs "Bengaluru") instead of requiring an exact literal match.
 - Multi-hop schema linking: the current FK expansion is one level deep,
   which is enough for this schema's simple chain but wouldn't guarantee
   correctness on a schema where the needed table is two FK-hops away from
   every seed match.
-- Optional stretch goals discussed: self-correcting SQL (feed a Postgres
-  error back to the LLM to retry), an MCP server mode so external AI clients
-  (e.g. Claude Desktop) can query the database directly, and a pluggable
-  multi-provider AI setup (Strategy pattern over multiple `ChatClient`
-  beans).
+- Optional stretch goals discussed: an MCP server mode so external AI
+  clients (e.g. Claude Desktop) can query the database directly, and a
+  pluggable multi-provider AI setup (Strategy pattern over multiple
+  `ChatClient` beans).
