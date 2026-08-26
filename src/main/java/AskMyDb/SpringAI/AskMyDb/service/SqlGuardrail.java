@@ -1,5 +1,6 @@
 package AskMyDb.SpringAI.AskMyDb.service;
 
+import AskMyDb.SpringAI.AskMyDb.exception.UnsafeSqlException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;

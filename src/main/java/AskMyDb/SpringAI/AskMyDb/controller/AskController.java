@@ -4,7 +4,7 @@ import AskMyDb.SpringAI.AskMyDb.dto.AskRequest;
 import AskMyDb.SpringAI.AskMyDb.dto.AskResponse;
 import AskMyDb.SpringAI.AskMyDb.service.AskResult;
 import AskMyDb.SpringAI.AskMyDb.service.AskService;
-import AskMyDb.SpringAI.AskMyDb.service.UnsafeSqlException;
+import AskMyDb.SpringAI.AskMyDb.exception.UnsafeSqlException;
 import jakarta.validation.Valid;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;

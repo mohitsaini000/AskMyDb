@@ -1,4 +1,4 @@
-package AskMyDb.SpringAI.AskMyDb.service;
+package AskMyDb.SpringAI.AskMyDb.exception;
 
 // Thrown when a registration attempt uses a username that already exists.
 // Its own type (instead of a generic exception) lets AuthController map it

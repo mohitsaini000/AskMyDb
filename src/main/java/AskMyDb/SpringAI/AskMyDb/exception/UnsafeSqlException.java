@@ -1,4 +1,4 @@
-package AskMyDb.SpringAI.AskMyDb.service;
+package AskMyDb.SpringAI.AskMyDb.exception;
 
 // Thrown when the LLM's generated SQL fails our safety checks
 // (not a SELECT, contains a destructive keyword, multiple statements, etc.)

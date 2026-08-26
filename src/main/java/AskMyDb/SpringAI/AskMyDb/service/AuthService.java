@@ -2,6 +2,7 @@ package AskMyDb.SpringAI.AskMyDb.service;
 
 import AskMyDb.SpringAI.AskMyDb.model.User;
 import AskMyDb.SpringAI.AskMyDb.repository.UserRepository;
+import AskMyDb.SpringAI.AskMyDb.exception.UsernameTakenException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 

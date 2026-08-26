@@ -2,7 +2,7 @@ package AskMyDb.SpringAI.AskMyDb.controller;
 
 import AskMyDb.SpringAI.AskMyDb.dto.RegisterRequest;
 import AskMyDb.SpringAI.AskMyDb.service.AuthService;
-import AskMyDb.SpringAI.AskMyDb.service.UsernameTakenException;
+import AskMyDb.SpringAI.AskMyDb.exception.UsernameTakenException;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
