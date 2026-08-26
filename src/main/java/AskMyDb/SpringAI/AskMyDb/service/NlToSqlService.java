@@ -12,9 +12,7 @@ import org.springframework.stereotype.Service;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 // Turns a plain-English question into a SQL query using the LLM,
 // grounded in a *retrieved* slice of the schema (via the vector store) so it
@@ -72,6 +70,12 @@ public class NlToSqlService {
               through every intermediate table that connects them, one hop at a time -
               never invent a direct join between two tables just because they both
               happen to have a similarly-named id column. See the fourth example below.
+            - Some columns below list "Example values" - the actual distinct values
+              that column really contains in the database. If the question mentions a
+              value that is not an exact match to any listed example, but you recognize
+              it as a common alternate name or spelling for one of them (e.g. "Bangalore"
+              and "Bengaluru" are the same city), use the exact value shown in the schema
+              in your WHERE clause, not the word the user typed.
 
             Example of correctly deriving a value that has no direct column:
             Question: What is the total value of all shipped orders?
@@ -163,10 +167,32 @@ public class NlToSqlService {
         log.info("DEBUG - final tables after FK expansion (sent to LLM): {}", relevantTables);
 
         Map<String, String> allDescriptions = schemaService.getTableDescriptions();
-        return relevantTables.stream()
-                .map(allDescriptions::get)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining("\n"));
+
+        StringBuilder schemaText = new StringBuilder();
+        for (String table : relevantTables) {
+            String description = allDescriptions.get(table);
+            if (description == null) {
+                continue;
+            }
+            schemaText.append(description);
+
+            // Value linking: only fetched for the small number of tables
+            // actually being shown to the LLM this question, never for
+            // every table in the database - this is a live query against
+            // real data, not something we want to run unnecessarily.
+            Map<String, List<String>> sampleValues = schemaService.getSampleValues(table);
+            for (Map.Entry<String, List<String>> entry : sampleValues.entrySet()) {
+                if (entry.getValue().isEmpty()) {
+                    continue;
+                }
+                schemaText.append("  Example values for ").append(entry.getKey())
+                        .append(": ").append(String.join(", ", entry.getValue())).append("\n");
+            }
+
+            schemaText.append("\n");
+        }
+
+        return schemaText.toString();
     }
 
     // Self-correction step: called only when a previously-generated query was

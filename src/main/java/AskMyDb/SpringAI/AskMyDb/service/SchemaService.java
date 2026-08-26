@@ -8,10 +8,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -164,6 +167,89 @@ public class SchemaService {
         }
 
         return related;
+    }
+
+    // How many distinct values a column can have before we treat it as
+    // "free text" (customer names, addresses, etc.) rather than a genuine
+    // categorical/lookup column (city, status, category) worth showing real
+    // examples of. Enforced via LIMIT in the query itself - if the result
+    // hits exactly this cap, we don't actually know the true count, so we
+    // treat it as too high rather than risk dumping hundreds of values.
+    private static final int SAMPLE_VALUE_LIMIT = 20;
+
+    // Live, per-question lookup - deliberately NOT cached, NOT part of
+    // getTableDescriptions(), and NOT part of the schema fingerprint. Actual
+    // row *values* change far more often than table *structure* does (new
+    // customers sign up constantly; a new column doesn't appear often), so
+    // baking this into the same cached/embedded text as the structural
+    // schema would mean it goes stale almost immediately.
+    //
+    // This exists to solve "value linking": a user might refer to a real
+    // stored value by a different name than what's actually in the
+    // database (e.g. asking for "Bangalore" when the column actually
+    // stores "Bengaluru"). No amount of schema/column description fixes
+    // that - the LLM needs to see the *actual* values that exist so it can
+    // recognize the match itself using knowledge it already has.
+    public Map<String, List<String>> getSampleValues(String tableName) {
+        Map<String, List<String>> samples = new LinkedHashMap<>();
+
+        try (Connection connection = dataSource.getConnection()) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            try (ResultSet columns = metaData.getColumns(null, "public", tableName, "%")) {
+                while (columns.next()) {
+                    String columnName = columns.getString("COLUMN_NAME");
+                    String columnType = columns.getString("TYPE_NAME");
+
+                    // Only text-like columns have "spelling variant"
+                    // ambiguity the way city/category/status names do -
+                    // numbers, dates and ids don't need this treatment.
+                    if (!isTextType(columnType)) {
+                        continue;
+                    }
+
+                    List<String> values = fetchDistinctValues(connection, tableName, columnName);
+                    if (values.size() <= SAMPLE_VALUE_LIMIT) {
+                        // At or under the cap means we saw every distinct
+                        // value that exists - a genuinely small, categorical
+                        // column worth showing in full.
+                        samples.put(columnName, values);
+                    }
+                    // Hit the cap -> likely free text (names, addresses)
+                    // with too many unique values to usefully show; skip it.
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to read sample values for table: " + tableName, e);
+        }
+
+        return samples;
+    }
+
+    private boolean isTextType(String columnType) {
+        String upper = columnType.toUpperCase();
+        return upper.contains("CHAR") || upper.contains("TEXT");
+    }
+
+    private List<String> fetchDistinctValues(Connection connection, String tableName, String columnName) throws SQLException {
+        // tableName/columnName come from JDBC metadata (the database's own
+        // catalog), never from user input, so string-building this SQL is
+        // safe here in a way it would NOT be for anything derived from a
+        // question or request body.
+        String sql = "SELECT DISTINCT " + columnName + " FROM " + tableName + " LIMIT " + (SAMPLE_VALUE_LIMIT + 1);
+        List<String> values = new ArrayList<>();
+
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                String value = resultSet.getString(1);
+                if (value != null) {
+                    values.add(value);
+                }
+            }
+        }
+
+        return values;
     }
 
     // A stable "fingerprint" of the current schema's shape (every table's
