@@ -32,7 +32,7 @@ public class SchemaService {
     // never be described to the LLM as queryable, and must never get embedded
     // as if they were a real table - both would be a confusing (and slightly
     // circular) mistake.
-    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings", "schema_index_state");
+    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings", "schema_index_state", "app_users");
 
     public SchemaService(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -183,7 +183,7 @@ public class SchemaService {
     // of candidates than silently show nothing.
     private static final double SIMILARITY_THRESHOLD = 0.2;
 
-    // How many fuzzy matches to show per high-cardinality column. Small on
+    // How many  matches to show per high-cardinality column. Small on
     // purpose - this is meant to be a short, targeted hint list, not a
     // second copy of the whole column.
     private static final int FUZZY_MATCH_LIMIT = 5;
