@@ -269,11 +269,52 @@ constructed correctly.
 
 ---
 
+## Day 4 — 2026-08-26
+
+Pushed the two pending commits from Day 3 to `origin/main` — confirmed
+`git log origin/main` matches local `main`.
+
+Closed a real gap flagged in the RAG writeup: `SchemaIndexer` used to
+decide whether to (re-)index with a cheap existence check — "is anything
+at all in the vector store?" That means if the schema changes later (a
+column added, a table dropped) *without* the `schema_embeddings` table
+being manually cleared first, the app would see it's non-empty, assume
+everything's fine, and keep serving stale table descriptions to the LLM
+forever, with nothing in the logs or the API hinting anything was wrong.
+
+Replaced it with a fingerprint-based check. `SchemaService
+.computeSchemaFingerprint()` builds a deterministic string from every
+table's name, columns and column types (sorted first, so ordering from
+the database driver can't change the hash), then SHA-256-hashes it into
+one short string that changes if and only if the schema's shape changes.
+
+`SchemaIndexer` now:
+1. Ensures a tiny `schema_index_state` table exists (one row, id = 1) to
+   remember the fingerprint from the last successful index.
+2. Computes the *current* live fingerprint on every startup.
+3. Compares it to the stored one:
+   - same → schema hasn't moved, skip re-indexing (same fast-startup
+     behavior as before).
+   - different (or no row yet) → logs why, deletes every row from the
+     vector table, re-embeds every current table from scratch, and saves
+     the new fingerprint.
+
+Deliberately a full delete-and-rebuild rather than a per-table diff: it's
+simpler, and it's the only version that's automatically correct when a
+table is *renamed or dropped* — a diff that only adds/updates changed
+tables would leave a stale, no-longer-real table's embedding sitting in
+the vector store forever, still retrievable by similarity search.
+
+`schema_index_state` was added to `SchemaService.INTERNAL_TABLES` for the
+same reason `schema_embeddings` already was — it's AskMyDb's own
+bookkeeping, not a business table, so it must never be described to the
+LLM or embedded as if it were queryable data.
+
+---
+
 ## Next up
 
 - Real authentication (JWT) to replace the temporary open `SecurityConfig`.
-- Push the latest commits to GitHub (local commits are ready, ahead of
-  `origin/main`).
 - Multi-hop schema linking: the current FK expansion is one level deep,
   which is enough for this schema's simple chain but wouldn't guarantee
   correctness on a schema where the needed table is two FK-hops away from

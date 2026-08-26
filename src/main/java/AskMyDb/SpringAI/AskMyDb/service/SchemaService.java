@@ -3,6 +3,9 @@ package AskMyDb.SpringAI.AskMyDb.service;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
@@ -11,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 // Reads the real database structure at request time using plain JDBC metadata APIs
 // (not JPA/Hibernate) so it works even though we don't have @Entity classes -
@@ -20,11 +24,12 @@ public class SchemaService {
 
     private final DataSource dataSource;
 
-    // The RAG layer's own storage table lives in this same "public" schema.
-    // It must never be described to the LLM as a queryable business table,
-    // and it must never get embedded as if it were one - both would be a
-    // confusing (and slightly circular) mistake.
-    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings");
+    // Tables that belong to AskMyDb's own bookkeeping, not the user's business
+    // data. They live in the same "public" schema as everything else, but must
+    // never be described to the LLM as queryable, and must never get embedded
+    // as if they were a real table - both would be a confusing (and slightly
+    // circular) mistake.
+    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings", "schema_index_state");
 
     public SchemaService(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -124,5 +129,38 @@ public class SchemaService {
         }
 
         return related;
+    }
+
+    // A stable "fingerprint" of the current schema's shape (every table's
+    // name, columns and column types, combined and hashed). SchemaIndexer
+    // compares this against the fingerprint it saved after the last index:
+    //   - same hash  -> schema hasn't changed, safe to skip re-indexing.
+    //   - different  -> a table/column was added, removed or retyped since
+    //                   the embeddings were built, so they're now stale and
+    //                   must be rebuilt.
+    // TreeMap sorts by table name first so the same schema always hashes to
+    // the same value regardless of the order the database happens to return
+    // tables in.
+    public String computeSchemaFingerprint() {
+        Map<String, String> sortedDescriptions = new TreeMap<>(getTableDescriptions());
+
+        StringBuilder combined = new StringBuilder();
+        for (String description : sortedDescriptions.values()) {
+            combined.append(description);
+        }
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(combined.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hash) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is guaranteed to exist on every standard JDK - this is
+            // effectively unreachable, but the checked exception must be handled.
+            throw new RuntimeException("SHA-256 algorithm not available", e);
+        }
     }
 }
