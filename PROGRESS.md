@@ -411,20 +411,62 @@ new `JwtService.generateToken()` to mint a signed JWT (JJWT 0.13.0,
 HMAC-SHA256, secret + expiry from `application.yaml`). Deliberately
 returns the exact same `InvalidCredentialsException` whether the username
 doesn't exist or the password is wrong, so a client can't use the error
-to enumerate valid usernames. `SecurityConfig` still `permitAll()`s
-everything for now - nothing reads or checks the token on protected
-requests yet. That's Stage C: a `JwtAuthFilter` that verifies the
-signature and expiry on every request and rejects ones without a valid
-token.
+to enumerate valid usernames.
+
+**JWT authentication, Stage C - the part that actually enforces it.**
+`JwtService.extractUsername()` verifies a token's signature and expiry
+(via `Jwts.parser().verifyWith(key)...`) and reads the username back out
+of the payload, throwing if either check fails. `JwtAuthFilter` (a
+`OncePerRequestFilter`, in a new `security` package) runs on every
+request: if an `Authorization: Bearer <token>` header is present and
+valid, it marks the request as authenticated in Spring's
+`SecurityContextHolder`; if the header is missing or the token fails
+verification, it just leaves the request unauthenticated and moves on -
+the filter itself never rejects anything. The actual rejection now comes
+from `SecurityConfig`, which changed from blanket `permitAll()` to
+`/api/auth/**` public + everything else `authenticated()`, with session
+creation set to `STATELESS` (no server-side session - each request proves
+itself with its own token). Postman collection updated to match: a
+collection-level Bearer auth pointing at a `{{jwtToken}}` variable, with
+the login request's test script auto-saving the returned token into that
+variable - login once, every other request in the collection picks up
+the token automatically.
+
+Testing this from the browser (the existing landing page's live "Ask"
+demo) surfaced a real bug: `SecurityConfig`'s `anyRequest().authenticated()`
+also locked down `index.html` itself - the page containing the sign-in
+form couldn't load, a chicken-and-egg 403. Fixed by explicitly
+`permitAll()`-ing `/`, `/index.html`, and `/favicon.ico`, so the shell page
+is public while every API call it makes stays protected. The landing page
+also got a real sign-in/register panel wired to the actual `/api/auth`
+endpoints (not a mock), gating its live demo box the same way a real
+client would use this API.
+
+**JWT authentication, refresh tokens.** The three stages above are a
+complete but incomplete picture: a 1-hour access token with no way to
+renew it means re-entering a password every hour, and a pure JWT can
+never be revoked before it expires - there's no "logout" that means
+anything. Added a second, deliberately different kind of token to close
+both gaps. A refresh token is NOT a JWT - it's 64 bytes of randomness,
+looked up by its SHA-256 hash in a new `refresh_tokens` table (raw value
+never stored, same reasoning as BCrypt-hashing passwords), with an
+`expiryDate` and a `revoked` flag. `POST /api/auth/login` now returns
+both tokens; `POST /api/auth/refresh` trades a still-valid refresh token
+for a brand new access+refresh pair (`RefreshTokenService
+.rotateAndGetUsername()` immediately revokes the one just used - single
+use only, so a stolen-and-replayed old token is rejected as "already
+used"); `POST /api/auth/logout` revokes a refresh token on request, which
+is what makes logout actually mean something despite the access token
+itself staying stateless. Postman and the landing page's demo were both
+updated: login now stores both tokens, the demo's `ask()` call silently
+calls `/api/auth/refresh` and retries on a 401 instead of bouncing the
+visitor to the sign-in form, and "Sign out" now calls
+`/api/auth/logout` for real revocation before clearing local storage.
 
 ---
 
 ## Next up
 
-- JWT authentication, Stage C: a `JwtAuthFilter` that verifies the token
-  signature/expiry on protected requests and actually enforces it in
-  `SecurityConfig` (registration and login stay public; everything else
-  should require a valid token).
 - Value linking: the pg_trgm fuzzy match (Day 6) catches typos/near
   matches but not true aliases with no character overlap (e.g. "Bombay"
   vs "Mumbai") - would need a small alias dictionary or a different

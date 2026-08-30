@@ -10,6 +10,16 @@
       "key": "baseUrl",
       "value": "http://localhost:8080",
       "type": "string"
+    },
+    {
+      "key": "jwtToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -251,6 +261,9 @@
                 "auth",
                 "register"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           }
         },
@@ -278,6 +291,9 @@
                 "auth",
                 "register"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           }
         },
@@ -305,6 +321,9 @@
                 "auth",
                 "register"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           }
         },
@@ -332,8 +351,29 @@
                 "auth",
                 "login"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Login succeeded and returned both tokens\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.token).to.be.a(\"string\").and.not.empty;",
+                  "    pm.expect(jsonData.refreshToken).to.be.a(\"string\").and.not.empty;",
+                  "    pm.collectionVariables.set(\"jwtToken\", jsonData.token);",
+                  "    pm.collectionVariables.set(\"refreshToken\", jsonData.refreshToken);",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Login - wrong password",
@@ -359,6 +399,9 @@
                 "auth",
                 "login"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           }
         },
@@ -386,10 +429,147 @@
                 "auth",
                 "login"
               ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           }
+        },
+        {
+          "name": "Refresh - get new access token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Refresh returned a new token pair\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.token).to.be.a(\"string\").and.not.empty;",
+                  "    pm.expect(jsonData.refreshToken).to.be.a(\"string\").and.not.empty;",
+                  "    // Rotation: the OLD refreshToken is now revoked - always overwrite",
+                  "    // the stored one with this new one, or the next refresh will fail.",
+                  "    pm.collectionVariables.set(\"jwtToken\", jsonData.token);",
+                  "    pm.collectionVariables.set(\"refreshToken\", jsonData.refreshToken);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh - reused (already-rotated) token fails",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"paste-an-already-used-refresh-token-here\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Logout - revoke refresh token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Logout succeeded (204)\", function () {",
+                  "    pm.response.to.have.status(204);",
+                  "    pm.collectionVariables.set(\"refreshToken\", \"\");",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
-  ]
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwtToken}}",
+        "type": "string"
+      }
+    ]
+  }
 }

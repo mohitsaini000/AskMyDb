@@ -241,6 +241,82 @@
   }
   #console .lede { margin-bottom: 34px; }
 
+  .auth-gate {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 22px 24px 20px;
+    margin-bottom: 30px;
+    max-width: 420px;
+  }
+  .auth-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .auth-tab {
+    font-family: var(--font-display);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--bg-raised-2);
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  .auth-tab.active { color: var(--ink); background: var(--flow-dim); border-color: var(--flow); }
+  .auth-form { display: flex; flex-direction: column; gap: 10px; }
+  .auth-form input {
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 14px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .auth-form input::placeholder { color: var(--muted-dim); }
+  .auth-form input:focus { outline: none; border-color: var(--flow); box-shadow: 0 0 0 3px var(--flow-dim); }
+  .auth-form button[type="submit"] {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--on-accent);
+    background: var(--flow);
+    border: none;
+    border-radius: 8px;
+    padding: 11px 0;
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+  }
+  .auth-form button[type="submit"]:hover:not(:disabled) { transform: translateY(-1px); }
+  .auth-form button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
+  .auth-error {
+    margin: 12px 0 0;
+    font-size: 13px;
+    color: var(--danger);
+    background: var(--danger-dim);
+    border: 1px solid var(--danger-border);
+    border-radius: 7px;
+    padding: 9px 12px;
+  }
+  .auth-hint { margin: 14px 0 0; font-size: 12px; color: var(--muted-dim); line-height: 1.5; }
+  .auth-hint code { font-family: var(--font-display); color: var(--muted); }
+
+  .signed-in-row { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+  .signed-in-row strong { color: var(--ink); }
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--flow);
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
   .ask-row { display: flex; gap: 10px; margin-bottom: 10px; }
   #question {
     flex: 1;
@@ -468,20 +544,38 @@
   <div class="wrap">
     <p class="eyebrow">Try it for real</p>
     <h2>Ask something.</h2>
-    <p class="lede">This box talks to the live <code>/api/ask</code> endpoint below — real schema, real LLM call, real Postgres.</p>
+    <p class="lede">This box talks to the live <code>/api/ask</code> endpoint below — real schema, real LLM call, real Postgres. Protected by JWT auth, so sign in first.</p>
 
-    <div class="ask-row">
-      <input id="question" type="text" placeholder="e.g. Which city has the most customers?" autocomplete="off">
-      <button id="askBtn">Ask</button>
+    <div id="authGate" class="auth-gate">
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" data-mode="login">Sign in</button>
+        <button type="button" class="auth-tab" data-mode="register">Create account</button>
+      </div>
+      <form id="authForm" class="auth-form">
+        <input id="authUsername" type="text" placeholder="Username" autocomplete="username" required minlength="3" maxlength="50">
+        <input id="authPassword" type="password" placeholder="Password (min 8 characters)" autocomplete="current-password" required minlength="8">
+        <button type="submit" id="authSubmit">Sign in</button>
+      </form>
+      <p id="authError" class="auth-error" hidden></p>
+      <p class="auth-hint">Wired to the real <code>/api/auth/register</code> and <code>/api/auth/login</code> endpoints — this isn't a mock login.</p>
     </div>
 
-    <div class="stages" id="stages">
-      <div class="stage" data-stage="0"><span class="led"></span>Drafting SQL</div>
-      <div class="stage" data-stage="1"><span class="led"></span>Checking safety</div>
-      <div class="stage" data-stage="2"><span class="led"></span>Querying Postgres</div>
-    </div>
+    <div id="askConsole" class="ask-console" hidden>
+      <p class="signed-in-row">Signed in as <strong id="signedInUser"></strong> · <button type="button" id="logoutBtn" class="link-btn">Sign out</button></p>
 
-    <div id="result"></div>
+      <div class="ask-row">
+        <input id="question" type="text" placeholder="e.g. Which city has the most customers?" autocomplete="off">
+        <button id="askBtn">Ask</button>
+      </div>
+
+      <div class="stages" id="stages">
+        <div class="stage" data-stage="0"><span class="led"></span>Drafting SQL</div>
+        <div class="stage" data-stage="1"><span class="led"></span>Checking safety</div>
+        <div class="stage" data-stage="2"><span class="led"></span>Querying Postgres</div>
+      </div>
+
+      <div id="result"></div>
+    </div>
   </div>
 </section>
 
@@ -742,11 +836,38 @@
     startStageAnimation();
 
     try {
-      const response = await fetch('/api/ask', {
+      let response = await fetch('/api/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + getToken()
+        },
         body: JSON.stringify({ question })
       });
+
+      if (response.status === 401) {
+        // Access token expired (it only lives an hour) - try the refresh
+        // token before bothering the visitor. This is the entire reason
+        // a refresh token exists: the visitor never notices the access
+        // token expired at all, as long as the refresh token is still good.
+        const refreshed = await trySilentRefresh();
+        if (!refreshed) {
+          stopStageAnimation(false);
+          clearSession();
+          showAuthGate('Your session expired - please sign in again.');
+          return;
+        }
+
+        response = await fetch('/api/ask', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + getToken()
+          },
+          body: JSON.stringify({ question })
+        });
+      }
+
       const data = await response.json();
       stopStageAnimation(response.ok);
 
@@ -812,6 +933,155 @@
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  /* ---------- AUTH ---------- */
+  const AUTH_TOKEN_KEY = 'askmydb_jwt';
+  const AUTH_REFRESH_KEY = 'askmydb_refresh_token';
+  const AUTH_USER_KEY = 'askmydb_jwt_username';
+
+  const authGateEl = document.getElementById('authGate');
+  const askConsoleEl = document.getElementById('askConsole');
+  const authForm = document.getElementById('authForm');
+  const authUsernameInput = document.getElementById('authUsername');
+  const authPasswordInput = document.getElementById('authPassword');
+  const authSubmitBtn = document.getElementById('authSubmit');
+  const authErrorEl = document.getElementById('authError');
+  const authTabButtons = Array.from(document.querySelectorAll('.auth-tab'));
+  const signedInUserEl = document.getElementById('signedInUser');
+  const logoutBtn = document.getElementById('logoutBtn');
+
+  let authMode = 'login';
+
+  function getToken() { return localStorage.getItem(AUTH_TOKEN_KEY); }
+  function getRefreshToken() { return localStorage.getItem(AUTH_REFRESH_KEY); }
+
+  function storeSession(username, accessToken, refreshToken) {
+    localStorage.setItem(AUTH_USER_KEY, username);
+    localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
+    localStorage.setItem(AUTH_REFRESH_KEY, refreshToken);
+  }
+
+  function clearSession() {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_REFRESH_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+  }
+
+  // Silently trades the stored refresh token for a new access token, so
+  // an expired access token doesn't force the visitor back to a login
+  // form. Returns true on success (a new access token is now stored and
+  // ready to use), false if the refresh token itself is gone/expired/
+  // already used - at that point there really is no way forward but to
+  // sign in again.
+  async function trySilentRefresh() {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return false;
+
+    const result = await postJson('/api/auth/refresh', { refreshToken });
+    if (!result.ok) return false;
+
+    // Rotation: the server just revoked the old refresh token and issued
+    // a new one - both stored values MUST be overwritten, or the next
+    // refresh attempt would present an already-used token and fail.
+    localStorage.setItem(AUTH_TOKEN_KEY, result.data.token);
+    localStorage.setItem(AUTH_REFRESH_KEY, result.data.refreshToken);
+    return true;
+  }
+
+  function showAskConsole(username) {
+    signedInUserEl.textContent = username;
+    authGateEl.hidden = true;
+    askConsoleEl.hidden = false;
+  }
+
+  function showAuthGate(message) {
+    askConsoleEl.hidden = true;
+    authGateEl.hidden = false;
+    if (message) {
+      authErrorEl.textContent = message;
+      authErrorEl.hidden = false;
+    }
+  }
+
+  function setAuthMode(mode) {
+    authMode = mode;
+    authTabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
+    authSubmitBtn.textContent = mode === 'login' ? 'Sign in' : 'Create account';
+    authPasswordInput.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+    authErrorEl.hidden = true;
+  }
+
+  authTabButtons.forEach(btn => btn.addEventListener('click', () => setAuthMode(btn.dataset.mode)));
+
+  async function postJson(path, body) {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    let data = null;
+    try { data = await response.json(); } catch (e) { /* e.g. 201 on register has no body */ }
+    return { ok: response.ok, status: response.status, data };
+  }
+
+  authForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    authErrorEl.hidden = true;
+    authSubmitBtn.disabled = true;
+
+    const username = authUsernameInput.value.trim();
+    const password = authPasswordInput.value;
+
+    try {
+      if (authMode === 'register') {
+        const registerResult = await postJson('/api/auth/register', { username, password });
+        if (!registerResult.ok) {
+          throw new Error((registerResult.data && registerResult.data.detail) || 'Registration failed.');
+        }
+        // Registered successfully - sign them straight in rather than
+        // making them re-type the same credentials into a second form.
+      }
+
+      const loginResult = await postJson('/api/auth/login', { username, password });
+      if (!loginResult.ok) {
+        throw new Error((loginResult.data && loginResult.data.detail) || 'Sign in failed.');
+      }
+
+      storeSession(username, loginResult.data.token, loginResult.data.refreshToken);
+      authForm.reset();
+      showAskConsole(username);
+    } catch (err) {
+      authErrorEl.textContent = err.message || 'Something went wrong.';
+      authErrorEl.hidden = false;
+    } finally {
+      authSubmitBtn.disabled = false;
+    }
+  });
+
+  logoutBtn.addEventListener('click', async () => {
+    // Revoke the refresh token server-side - this is the difference
+    // between "logout" actually meaning something and just forgetting the
+    // token locally while it stays silently valid in the database.
+    const refreshToken = getRefreshToken();
+    if (refreshToken) {
+      try { await postJson('/api/auth/logout', { refreshToken }); }
+      catch (e) { /* best-effort - clear the local session either way */ }
+    }
+    clearSession();
+    showAuthGate();
+  });
+
+  // Resume a session from a previous visit. The token isn't re-validated
+  // here - that only happens when it's actually sent to a protected
+  // endpoint. If it has since expired, the next /api/ask call gets a 401
+  // and ask() above sends the visitor back to the sign-in gate.
+  const savedToken = getToken();
+  const savedUser = localStorage.getItem(AUTH_USER_KEY);
+  if (savedToken && savedUser) {
+    showAskConsole(savedUser);
+  } else {
+    showAuthGate();
   }
 
   askBtn.addEventListener('click', ask);

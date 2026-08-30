@@ -32,7 +32,7 @@ public class SchemaService {
     // never be described to the LLM as queryable, and must never get embedded
     // as if they were a real table - both would be a confusing (and slightly
     // circular) mistake.
-    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings", "schema_index_state", "app_users");
+    private static final Set<String> INTERNAL_TABLES = Set.of("schema_embeddings", "schema_index_state", "app_users", "refresh_tokens");
 
     public SchemaService(DataSource dataSource) {
         this.dataSource = dataSource;

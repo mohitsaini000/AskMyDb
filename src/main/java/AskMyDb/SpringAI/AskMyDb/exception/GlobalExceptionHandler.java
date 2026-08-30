@@ -64,6 +64,15 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    // Refresh token was unknown, already used/revoked, or expired -
+    // whichever it is, the client needs to log in again with credentials.
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ProblemDetail handleInvalidRefreshToken(InvalidRefreshTokenException e) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, e.getMessage());
+        problem.setTitle("Refresh failed");
+        return problem;
+    }
+
     // Postgres itself rejected the SQL while running it (e.g. a column that
     // doesn't exist), and self-correction (AskService's retry loop) still
     // couldn't fix it after its one allowed attempt.

@@ -2,6 +2,7 @@ package AskMyDb.SpringAI.AskMyDb.controller;
 
 import AskMyDb.SpringAI.AskMyDb.dto.LoginRequest;
 import AskMyDb.SpringAI.AskMyDb.dto.LoginResponse;
+import AskMyDb.SpringAI.AskMyDb.dto.RefreshRequest;
 import AskMyDb.SpringAI.AskMyDb.dto.RegisterRequest;
 import AskMyDb.SpringAI.AskMyDb.service.AuthService;
 import jakarta.validation.Valid;
@@ -12,10 +13,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-// Stage A: registration. Stage B: login, which verifies credentials and
-// hands back a JWT. Every endpoint here is still permitAll() in
-// SecurityConfig for now - Stage C adds the filter that actually reads the
-// token on OTHER (protected) endpoints and rejects requests without one.
+// Every endpoint here is permitAll() in SecurityConfig - that's the only
+// way a client can ever get a first token, refresh an expired one, or
+// revoke one, without already having a valid token to begin with.
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
@@ -34,7 +34,24 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
-        String token = authService.login(request.username(), request.password());
-        return ResponseEntity.ok(new LoginResponse(token));
+        LoginResponse response = authService.login(request.username(), request.password());
+        return ResponseEntity.ok(response);
+    }
+
+    // Exchanges a still-valid, not-yet-used refresh token for a new
+    // access token + refresh token pair. Called automatically by a
+    // client when its access token has expired - no password needed.
+    @PostMapping("/refresh")
+    public ResponseEntity<LoginResponse> refresh(@Valid @RequestBody RefreshRequest request) {
+        LoginResponse response = authService.refresh(request.refreshToken());
+        return ResponseEntity.ok(response);
+    }
+
+    // Revokes the given refresh token so it can't be used again. This is
+    // what makes "logout" mean something for JWT auth - see AuthService.
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(@Valid @RequestBody RefreshRequest request) {
+        authService.logout(request.refreshToken());
+        return ResponseEntity.noContent().build();
     }
 }

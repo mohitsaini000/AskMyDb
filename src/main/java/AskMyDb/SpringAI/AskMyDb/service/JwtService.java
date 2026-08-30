@@ -43,4 +43,18 @@ public class JwtService {
                 .signWith(signingKey)
                 .compact();
     }
+
+    // Stage C: verifies the signature and expiry, then reads the username
+    // back out of the payload. parseSignedClaims() throws a JwtException
+    // (or a subtype - ExpiredJwtException, SignatureException,
+    // MalformedJwtException) if anything is wrong; JwtAuthFilter decides
+    // what to do with that, this method doesn't swallow it.
+    public String extractUsername(String token) {
+        return Jwts.parser()
+                .verifyWith(signingKey)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload()
+                .getSubject();
+    }
 }

@@ -38,8 +38,14 @@ askmydb:
     # Fine to keep here for a portfolio project; in a real production app
     # this would come from an environment variable, never committed to git.
     secret: qHb1PVahGxtjz5F/wVWTzua6QNAPYm6mgSqRI6gI724=
-    # Token lifetime in milliseconds - 1 hour.
+    # Access token lifetime in milliseconds - 1 hour. Deliberately short:
+    # if one leaks, the exposure window is small. Long-lived sessions are
+    # handled by the refresh token below instead of a long access token.
     expiration-ms: 3600000
+    # Refresh token lifetime in milliseconds - 7 days. Unlike the access
+    # token, this one is tracked in the refresh_tokens table, so it CAN be
+    # revoked (on logout, or if it's ever reused after being rotated).
+    refresh-expiration-ms: 604800000
 
   rag:
     # How many of the most-relevant tables to retrieve per question.
