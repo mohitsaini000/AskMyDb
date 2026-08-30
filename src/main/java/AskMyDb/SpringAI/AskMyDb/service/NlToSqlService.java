@@ -30,13 +30,16 @@ public class NlToSqlService {
     private final VectorStore vectorStore;
     private final SchemaService schemaService;
     private final int topK;
+    private final int schemaLinkHops;
 
     public NlToSqlService(ChatClient chatClient, VectorStore vectorStore, SchemaService schemaService,
-                           @Value("${askmydb.rag.top-k:3}") int topK) {
+                           @Value("${askmydb.rag.top-k:3}") int topK,
+                           @Value("${askmydb.rag.schema-link-hops:2}") int schemaLinkHops) {
         this.chatClient = chatClient;
         this.vectorStore = vectorStore;
         this.schemaService = schemaService;
         this.topK = topK;
+        this.schemaLinkHops = schemaLinkHops;
     }
 
     private static final String SYSTEM_TEMPLATE = """
@@ -152,19 +155,20 @@ public class NlToSqlService {
                 .toList();
         log.info("DEBUG - seed tables from vector similarity search: {}", seedTableNames);
 
-        Set<String> relevantTables = new LinkedHashSet<>();
+        Set<String> seedTables = new LinkedHashSet<>();
         for (Document match : seedMatches) {
             String tableName = (String) match.getMetadata().get("table");
-            if (tableName == null) {
-                continue;
+            if (tableName != null) {
+                seedTables.add(tableName);
             }
-            relevantTables.add(tableName);
-            relevantTables.addAll(schemaService.getRelatedTables(tableName));
         }
 
-        // TEMPORARY diagnostic logging - the final table set after FK
-        // expansion, i.e. exactly what schema text gets shown to the LLM.
-        log.info("DEBUG - final tables after FK expansion (sent to LLM): {}", relevantTables);
+        Set<String> relevantTables = expandViaForeignKeys(seedTables, schemaLinkHops);
+
+        // TEMPORARY diagnostic logging - the final table set after
+        // multi-hop FK expansion, i.e. exactly what schema text gets
+        // shown to the LLM.
+        log.info("DEBUG - final tables after {}-hop FK expansion (sent to LLM): {}", schemaLinkHops, relevantTables);
 
         Map<String, String> allDescriptions = schemaService.getTableDescriptions();
 
@@ -193,6 +197,45 @@ public class NlToSqlService {
         }
 
         return schemaText.toString();
+    }
+
+    // Multi-hop schema linking: getRelatedTables() only finds a table's
+    // *direct* FK neighbors. That's not always enough - a "bridge" table
+    // (e.g. order_items, sitting between orders and products) might not
+    // resemble the question's wording at all, so it never becomes a seed,
+    // AND it might be two FK-hops away from every seed table, so a single
+    // round of expansion misses it too. This does a breadth-first search
+    // outward from the seed tables instead of stopping after one hop:
+    // hop 1 = seeds' direct neighbors, hop 2 = their neighbors, and so on
+    // up to maxHops.
+    //
+    // This is a real precision/recall trade-off, not a free win: each extra
+    // hop can pull in more tables than intended on a densely-connected
+    // schema, making the prompt bigger (slower, costlier LLM calls) and
+    // potentially giving the model more irrelevant tables to get confused
+    // by. maxHops is deliberately small (askmydb.rag.schema-link-hops,
+    // default 2) rather than "expand until nothing new is found".
+    private Set<String> expandViaForeignKeys(Set<String> seedTables, int maxHops) {
+        Set<String> visited = new LinkedHashSet<>(seedTables);
+        Set<String> frontier = seedTables;
+
+        for (int hop = 0; hop < maxHops && !frontier.isEmpty(); hop++) {
+            Set<String> nextFrontier = new LinkedHashSet<>();
+            for (String table : frontier) {
+                for (String related : schemaService.getRelatedTables(table)) {
+                    // visited.add() returns false if this table was already
+                    // found on an earlier hop - only genuinely NEW tables
+                    // become part of the next hop's starting point, so we
+                    // never re-expand the same table twice.
+                    if (visited.add(related)) {
+                        nextFrontier.add(related);
+                    }
+                }
+            }
+            frontier = nextFrontier;
+        }
+
+        return visited;
     }
 
     // Self-correction step: called only when a previously-generated query was

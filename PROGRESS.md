@@ -463,6 +463,33 @@ calls `/api/auth/refresh` and retries on a 401 instead of bouncing the
 visitor to the sign-in form, and "Sign out" now calls
 `/api/auth/logout` for real revocation before clearing local storage.
 
+## Day 7 — 2026-08-30
+
+**Multi-hop schema linking.** The FK expansion added back on Day 5
+(`SchemaService.getRelatedTables()`) only ever looked one hop out from a
+seed table - enough for this project's small 4-table schema, where
+everything is within one hop of everything else, but not a real fix. On
+a bigger, more realistic schema (many modules, bridge/junction tables
+that don't share any wording with a typical question), a table needed
+for a correct JOIN could sit two or more FK-hops from every table the
+vector search actually picked as a seed, and it would simply never make
+it into the prompt - not a prompting problem, a retrieval problem; the
+LLM can't reference a table it was never shown.
+
+Replaced the single round of expansion with a breadth-first search
+(`NlToSqlService.expandViaForeignKeys()`): starting from the seed tables,
+each hop pulls in every new table directly FK-connected to the current
+frontier, stopping either at a configurable hop limit
+(`askmydb.rag.schema-link-hops`, default 2) or as soon as a hop finds no
+new tables (no point in a wasted extra round of JDBC calls once the
+graph is exhausted). This is a deliberate precision/recall trade-off,
+not a solved problem: a higher hop count catches more legitimately
+necessary bridge tables, but also risks pulling in tables the question
+has nothing to do with, which grows the prompt (cost, latency) and gives
+the model more chances to pick the wrong join path - the same class of
+problem a `top-k` that's too high would cause on the seed-selection side.
+Left small on purpose rather than "expand until nothing new is found."
+
 ---
 
 ## Next up
@@ -471,10 +498,6 @@ visitor to the sign-in form, and "Sign out" now calls
   matches but not true aliases with no character overlap (e.g. "Bombay"
   vs "Mumbai") - would need a small alias dictionary or a different
   technique to close that gap.
-- Multi-hop schema linking: the current FK expansion is one level deep,
-  which is enough for this schema's simple chain but wouldn't guarantee
-  correctness on a schema where the needed table is two FK-hops away from
-  every seed match.
 - Optional stretch goals discussed: an MCP server mode so external AI
   clients (e.g. Claude Desktop) can query the database directly, and a
   pluggable multi-provider AI setup (Strategy pattern over multiple

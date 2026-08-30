@@ -52,3 +52,10 @@ askmydb:
     # Deliberately less than the total table count (4) so retrieval is
     # actually filtering something, not just returning everything.
     top-k: 3
+    # How many foreign-key hops to expand outward from those seed tables
+    # (NlToSqlService.expandViaForeignKeys). 1 would only catch a bridge
+    # table directly connected to a seed; 2 also catches one sitting
+    # between two other tables that are themselves one hop out. Kept small
+    # on purpose - each extra hop risks pulling in more tables than the
+    # question actually needs.
+    schema-link-hops: 2
