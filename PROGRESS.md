@@ -490,15 +490,11 @@ the model more chances to pick the wrong join path - the same class of
 problem a `top-k` that's too high would cause on the seed-selection side.
 Left small on purpose rather than "expand until nothing new is found."
 
----
-
 ## Next up
 
 - Value linking: the pg_trgm fuzzy match (Day 6) catches typos/near
   matches but not true aliases with no character overlap (e.g. "Bombay"
   vs "Mumbai") - would need a small alias dictionary or a different
   technique to close that gap.
-- Optional stretch goals discussed: an MCP server mode so external AI
-  clients (e.g. Claude Desktop) can query the database directly, and a
-  pluggable multi-provider AI setup (Strategy pattern over multiple
-  `ChatClient` beans).
+- Multi-provider AI setup (Strategy pattern over multiple `ChatClient`
+  beans) so a provider other than Ollama could be swapped in.
