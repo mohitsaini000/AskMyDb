@@ -33,6 +33,14 @@ spring:
         table-name: schema_embeddings
 
 askmydb:
+  jwt:
+    # Base64-encoded random secret used to sign/verify tokens (HMAC-SHA256).
+    # Fine to keep here for a portfolio project; in a real production app
+    # this would come from an environment variable, never committed to git.
+    secret: qHb1PVahGxtjz5F/wVWTzua6QNAPYm6mgSqRI6gI724=
+    # Token lifetime in milliseconds - 1 hour.
+    expiration-ms: 3600000
+
   rag:
     # How many of the most-relevant tables to retrieve per question.
     # Deliberately less than the total table count (4) so retrieval is

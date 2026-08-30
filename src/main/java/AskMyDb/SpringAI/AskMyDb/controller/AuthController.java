@@ -1,23 +1,21 @@
 package AskMyDb.SpringAI.AskMyDb.controller;
 
+import AskMyDb.SpringAI.AskMyDb.dto.LoginRequest;
+import AskMyDb.SpringAI.AskMyDb.dto.LoginResponse;
 import AskMyDb.SpringAI.AskMyDb.dto.RegisterRequest;
 import AskMyDb.SpringAI.AskMyDb.service.AuthService;
-import AskMyDb.SpringAI.AskMyDb.exception.UsernameTakenException;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-// Stage A of JWT auth: registration only. Login (which actually issues a
-// JWT) and the filter that verifies it on protected requests come next -
-// this endpoint is independently testable on its own first: register a
-// user, then confirm a row landed in app_users with a BCrypt hash (never
-// the raw password) in its password column.
+// Stage A: registration. Stage B: login, which verifies credentials and
+// hands back a JWT. Every endpoint here is still permitAll() in
+// SecurityConfig for now - Stage C adds the filter that actually reads the
+// token on OTHER (protected) endpoints and rejects requests without one.
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
@@ -34,10 +32,9 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 
-    @ExceptionHandler(UsernameTakenException.class)
-    public ProblemDetail handleUsernameTaken(UsernameTakenException e) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
-        problem.setTitle("Registration failed");
-        return problem;
+    @PostMapping("/login")
+    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+        String token = authService.login(request.username(), request.password());
+        return ResponseEntity.ok(new LoginResponse(token));
     }
 }

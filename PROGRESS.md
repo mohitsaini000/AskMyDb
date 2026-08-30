@@ -374,11 +374,61 @@ maintaining a small alias dictionary for common name variants.
 
 ---
 
+## Day 6 — 2026-08-30
+
+Three separate pieces of hardening, none blocking on each other:
+
+**Value linking, upgraded to scale.** The Day 5 fix (dump all distinct
+values into the prompt when a column is small) doesn't scale - a column
+with hundreds or thousands of distinct values would blow up the prompt
+size and cost. `SchemaService.getSampleValues()` now branches on
+cardinality: columns with 20 or fewer distinct values still get the full
+list (cheap and always accurate), but larger columns fall back to
+`fetchFuzzyMatches()`, which uses Postgres's `pg_trgm` extension
+(trigram/character-overlap similarity, enabled once via
+`CREATE EXTENSION IF NOT EXISTS pg_trgm` in `SchemaIndexer`) to pull only
+the top 5 values whose `similarity()` to the user's question exceeds a
+threshold. This is pure SQL running inside Postgres - no embeddings, no
+extra AI call - and catches typos/near-matches, though it still won't
+catch a true alias with no character overlap (e.g. "Bombay" vs "Mumbai").
+
+**Exception handling, consolidated.** All custom exceptions
+(`UnsafeSqlException`, `UsernameTakenException`, now also
+`InvalidCredentialsException`) moved into one `exception` package, and a
+`GlobalExceptionHandler` (`@RestControllerAdvice`) replaced the
+per-controller `@ExceptionHandler` methods that had been duplicated
+across `AskController` and `AuthController`. One place now maps every
+failure type to its HTTP status (400/401/409/422/500), with a catch-all
+`Exception` handler that logs full details server-side but only ever
+returns a generic message to the client - standard practice for not
+leaking internals.
+
+**JWT authentication, Stage B.** Stage A (Day earlier) added registration
+with BCrypt-hashed passwords. Stage B adds `POST /api/auth/login`:
+`AuthService.login()` looks up the user, checks the raw password against
+the stored hash with `PasswordEncoder.matches()`, and on success calls the
+new `JwtService.generateToken()` to mint a signed JWT (JJWT 0.13.0,
+HMAC-SHA256, secret + expiry from `application.yaml`). Deliberately
+returns the exact same `InvalidCredentialsException` whether the username
+doesn't exist or the password is wrong, so a client can't use the error
+to enumerate valid usernames. `SecurityConfig` still `permitAll()`s
+everything for now - nothing reads or checks the token on protected
+requests yet. That's Stage C: a `JwtAuthFilter` that verifies the
+signature and expiry on every request and rejects ones without a valid
+token.
+
+---
+
 ## Next up
 
-- Real authentication (JWT) to replace the temporary open `SecurityConfig`.
-- Value linking: handle common city/entity name variants (e.g. "Bangalore"
-  vs "Bengaluru") instead of requiring an exact literal match.
+- JWT authentication, Stage C: a `JwtAuthFilter` that verifies the token
+  signature/expiry on protected requests and actually enforces it in
+  `SecurityConfig` (registration and login stay public; everything else
+  should require a valid token).
+- Value linking: the pg_trgm fuzzy match (Day 6) catches typos/near
+  matches but not true aliases with no character overlap (e.g. "Bombay"
+  vs "Mumbai") - would need a small alias dictionary or a different
+  technique to close that gap.
 - Multi-hop schema linking: the current FK expansion is one level deep,
   which is enough for this schema's simple chain but wouldn't guarantee
   correctness on a schema where the needed table is two FK-hops away from
