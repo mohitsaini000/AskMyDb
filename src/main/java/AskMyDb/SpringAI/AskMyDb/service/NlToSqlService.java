@@ -61,18 +61,26 @@ public class NlToSqlService {
               order's total), compute it from the raw columns that actually exist, using JOINs
               and aggregate functions (SUM, COUNT, etc.) as needed.
             - If the question cannot be answered using this schema, output exactly: CANNOT_ANSWER
-            - If the question asks for the "top" / "most" / "highest" / "least" item(s) and
-              also says what to do about ties (e.g. "if more than one has the same count,
-              list all of them"), never use LIMIT 1 for that. LIMIT 1 silently drops ties.
-              Instead select every row whose aggregate equals the maximum (or minimum),
-              using HAVING with a subquery that computes MAX()/MIN() over the grouped
-              aggregate, as shown in the second example below.
+            - If the question asks for the "top" / "most" / "highest" / "least" item(s):
+                - By default, write a simple ORDER BY <the aggregate or column being
+                  ranked> DESC (or ASC for "least"/"lowest"), then LIMIT 1. This is the
+                  correct approach unless the question ALSO explicitly says what to do
+                  about ties (e.g. "if more than one has the same count, list all of
+                  them") - see the two examples below for the difference.
+                - Only when ties are explicitly asked about, avoid LIMIT 1 (it silently
+                  drops ties) and instead select every row whose aggregate equals the
+                  maximum (or minimum), using HAVING with a subquery that computes
+                  MAX()/MIN() over the same grouped aggregate. That inner subquery MUST
+                  group by the exact same column the outer query groups by (e.g. if the
+                  outer query is GROUP BY city, the inner subquery computing the MAX must
+                  also GROUP BY city - never a different, unrelated column).
             - Only join two tables directly if one of them lists the other in its
               "Foreign keys" section below. If what the question needs spans two tables
               that are NOT directly connected by a listed foreign key, you must join
               through every intermediate table that connects them, one hop at a time -
               never invent a direct join between two tables just because they both
-              happen to have a similarly-named id column. See the fourth example below.
+              happen to have a similarly-named id column. See the join-through-an-
+              intermediate-table example below.
             - Some columns below list "Example values" - the actual distinct values
               that column really contains in the database. If the question mentions a
               value that is not an exact match to any listed example, but you recognize
@@ -84,7 +92,13 @@ public class NlToSqlService {
             Question: What is the total value of all shipped orders?
             SQL: SELECT SUM(oi.quantity * oi.unit_price) FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.status = 'SHIPPED';
 
-            Example of correctly handling ties instead of LIMIT 1:
+            Example of a plain "most/highest" question with no ties mentioned - use
+            ORDER BY + LIMIT 1, NOT a subquery:
+            Question: Which customer has spent the most money overall?
+            SQL: SELECT c.name FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id GROUP BY c.name ORDER BY SUM(oi.quantity * oi.unit_price) DESC LIMIT 1;
+
+            Example of correctly handling ties instead of LIMIT 1 - only because this
+            question explicitly asks what to do about them:
             Question: Which city has the most customers? If more than one city ties for the top count, list all of them.
             SQL: SELECT city FROM customers GROUP BY city HAVING COUNT(*) = (SELECT MAX(city_count) FROM (SELECT COUNT(*) AS city_count FROM customers GROUP BY city) AS counts);
 
